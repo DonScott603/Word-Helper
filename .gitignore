@@ -2,6 +2,11 @@
 *.bak
 *.docx.bak
 
+# PyInstaller build artifacts
+build/
+dist/
+*.spec
+
 # Python
 __pycache__/
 *.py[cod]

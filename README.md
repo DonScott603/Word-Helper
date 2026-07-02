@@ -12,6 +12,23 @@ Double-click **`Word Helper.bat`**, or from a terminal:
 py word_helper.py
 ```
 
+## Standalone .exe (no Python needed)
+
+A single-file `WordHelper.exe` can be built and copied to any 64-bit Windows
+machine — the target machine does **not** need Python or any packages installed.
+
+To build it:
+
+```
+py -m pip install pyinstaller
+build_exe.bat
+```
+
+The result is `dist\WordHelper.exe` (~16 MB). Copy that one file anywhere and
+double-click it. Note: the first launch may take a few seconds as it unpacks,
+and antivirus / SmartScreen may warn about an unsigned executable the first time
+(click "More info" → "Run anyway").
+
 ## Find & Replace tab
 
 1. **+ Add files** — pick one or more `.docx` files (repeat to add more).
