@@ -4,6 +4,14 @@ A small dark-themed desktop app for batch operations on Word (`.docx`) files.
 The first tool is **Find & Replace** across many documents at once, with **no
 255-character limit** (unlike Word's built-in dialog).
 
+## Download
+
+**[⬇ Download WordHelper.exe (latest release)](https://github.com/DonScott603/Word-Helper/releases/latest)**
+
+A standalone 64-bit Windows executable — no Python or install required. Download,
+double-click, done. (Unsigned, so on first run Windows may show a SmartScreen
+prompt: **More info → Run anyway**.)
+
 ## Running
 
 Double-click **`Word Helper.bat`**, or from a terminal:
