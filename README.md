@@ -56,6 +56,25 @@ original is always preserved. Files with no matches are not modified.
 Close a document in Word before running, or saving will fail with a
 "could not save (is it open in Word?)" message.
 
+## Replace Image tab
+
+Swap an embedded image across many documents at once — pick the **old** image
+(the one currently in the documents) and the **new** image to put in its place.
+
+1. **Old image → Choose…** — the picture as it appears in the documents now.
+2. **New image → Choose…** — the replacement. A thumbnail and its size/format
+   are shown for both.
+3. **+ Add files** — the `.docx` files to update.
+4. Optionally enable **"Also match by size if not an exact match"** — Word
+   sometimes re-compresses images on insert, so the bytes may not be identical;
+   this falls back to matching any image with the same pixel dimensions.
+5. **Replace image**.
+
+The new image is displayed at the **original's size and position** (only the
+image data is swapped). Identical images used in several places are all updated
+in one pass, including images in headers and footers. Different image formats
+are handled (e.g. replacing a PNG with a JPG). Same `.bak` backup as above.
+
 ## Notes / limitations
 
 - Matching happens within each paragraph. A Find string that spans a paragraph
