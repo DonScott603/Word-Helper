@@ -23,12 +23,15 @@ from PIL import Image as PILImage
 
 from docx_replace import replace_in_document
 from docx_image_replace import replace_images_in_document, read_image_info
+from docx_format import apply_formatting_in_document, FormatSpec
 
 APP_NAME = "Word Helper"
 ACCENT = "#3d7eff"
 ACCENT_HOVER = "#2f66d6"
 GREY = "#8a8f98"
 CARD = "#2b2d31"
+
+TRISTATE = {"Leave": None, "On": True, "Off": False}
 
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("dark-blue")
@@ -188,6 +191,9 @@ class WordHelperApp(ctk.CTk):
         self.tabview.add("Replace Image")
         self.build_image_replace_tab(self.tabview.tab("Replace Image"))
 
+        self.tabview.add("Formatting")
+        self.build_formatting_tab(self.tabview.tab("Formatting"))
+
         self.after(100, self._drain_queue)
 
     # ------------------------------------------------------------------ header
@@ -306,6 +312,154 @@ class WordHelperApp(ctk.CTk):
         )
         self._log(self.im_log,
                   "Choose the old and new image, add .docx files, then Replace.")
+
+    # -------------------------------------------------------------- formatting UI
+    def _tristate(self, parent, label, r, c):
+        cell = ctk.CTkFrame(parent, fg_color="transparent")
+        cell.grid(row=r, column=c, padx=(0, 18), pady=2, sticky="w")
+        ctk.CTkLabel(cell, text=label, font=ctk.CTkFont(size=12)).pack(anchor="w")
+        seg = ctk.CTkSegmentedButton(cell, values=["Leave", "On", "Off"])
+        seg.set("Leave")
+        seg.pack()
+        return seg
+
+    def build_formatting_tab(self, tab):
+        tab.grid_columnconfigure(0, weight=1)
+        tab.grid_rowconfigure(0, weight=1)  # file list grows
+        tab.grid_rowconfigure(6, weight=1)  # log grows
+
+        self.fm_files = FileSelector(tab)
+        self.fm_files.grid(row=0, column=0, sticky="nsew", pady=(8, 10))
+
+        ctk.CTkLabel(
+            tab, text="Find text to format",
+            font=ctk.CTkFont(size=15, weight="bold"),
+        ).grid(row=1, column=0, sticky="w")
+        self.fm_find = ctk.CTkTextbox(tab, height=70, wrap="word")
+        self.fm_find.grid(row=2, column=0, sticky="ew", pady=(2, 0))
+
+        opts = ctk.CTkFrame(tab, fg_color="transparent")
+        opts.grid(row=3, column=0, sticky="ew", pady=(10, 4))
+        self.fm_match_case = ctk.CTkSwitch(opts, text="Match case")
+        self.fm_match_case.pack(side="left")
+        self.fm_scope = ctk.StringVar(value="everywhere")
+        ctk.CTkLabel(opts, text="Scope:").pack(side="left", padx=(20, 6))
+        ctk.CTkOptionMenu(
+            opts, width=180, values=["everywhere", "body"], variable=self.fm_scope,
+            fg_color="#3a3d44", button_color="#3a3d44", button_hover_color="#4a4e57",
+        ).pack(side="left")
+        ctk.CTkLabel(
+            opts, text="Only the options you set are applied — 'Leave' means unchanged.",
+            text_color=GREY, font=ctk.CTkFont(size=12),
+        ).pack(side="right")
+
+        fmt = ctk.CTkFrame(tab, fg_color=CARD, corner_radius=8)
+        fmt.grid(row=4, column=0, sticky="ew", pady=(6, 4))
+        inner = ctk.CTkFrame(fmt, fg_color="transparent")
+        inner.pack(fill="x", padx=14, pady=12)
+
+        self.fm_bold = self._tristate(inner, "Bold", 0, 0)
+        self.fm_italic = self._tristate(inner, "Italic", 0, 1)
+        self.fm_underline = self._tristate(inner, "Underline", 0, 2)
+        self.fm_strike = self._tristate(inner, "Strikethrough", 0, 3)
+
+        line = ctk.CTkFrame(inner, fg_color="transparent")
+        line.grid(row=1, column=0, columnspan=4, sticky="ew", pady=(14, 0))
+        self.fm_set_font = ctk.CTkCheckBox(line, text="Font", width=70)
+        self.fm_set_font.pack(side="left")
+        self.fm_font = ctk.CTkEntry(line, width=150, placeholder_text="e.g. Arial")
+        self.fm_font.pack(side="left", padx=(4, 20))
+        self.fm_set_size = ctk.CTkCheckBox(line, text="Size (pt)", width=90)
+        self.fm_set_size.pack(side="left")
+        self.fm_size = ctk.CTkEntry(line, width=60, placeholder_text="12")
+        self.fm_size.pack(side="left", padx=(4, 20))
+        self.fm_set_color = ctk.CTkCheckBox(line, text="Color (hex)", width=100)
+        self.fm_set_color.pack(side="left")
+        self.fm_color = ctk.CTkEntry(line, width=90, placeholder_text="FF0000")
+        self.fm_color.pack(side="left", padx=(4, 0))
+
+        self.fm_run, self.fm_progress, self.fm_log = self._build_run_panel(
+            tab, 5, "Apply formatting", self._start_format_run
+        )
+        self._log(self.fm_log,
+                  "Add files, enter the text to find, choose formatting, then Apply.")
+
+    # ------------------------------------------------------- run: formatting tab
+    def _start_format_run(self):
+        if self._running:
+            return
+        find = self.fm_find.get("1.0", "end-1c")
+        if not self.fm_files.files:
+            self._log(self.fm_log, "⚠ No files selected.")
+            return
+        if not find:
+            self._log(self.fm_log, "⚠ The Find box is empty.")
+            return
+
+        spec = FormatSpec(
+            bold=TRISTATE[self.fm_bold.get()],
+            italic=TRISTATE[self.fm_italic.get()],
+            underline=TRISTATE[self.fm_underline.get()],
+            strike=TRISTATE[self.fm_strike.get()],
+        )
+        if self.fm_set_font.get() and self.fm_font.get().strip():
+            spec.name = self.fm_font.get().strip()
+        if self.fm_set_size.get():
+            try:
+                spec.size_pt = float(self.fm_size.get().strip())
+                if spec.size_pt <= 0:
+                    raise ValueError
+            except ValueError:
+                self._log(self.fm_log, "⚠ Size must be a positive number (points).")
+                return
+        if self.fm_set_color.get():
+            hexv = self.fm_color.get().strip().lstrip("#").upper()
+            if len(hexv) != 6 or any(c not in "0123456789ABCDEF" for c in hexv):
+                self._log(self.fm_log, "⚠ Color must be 6 hex digits, e.g. FF0000.")
+                return
+            spec.color = hexv
+
+        if spec.is_empty():
+            self._log(self.fm_log,
+                      "⚠ No formatting selected — set at least one option.")
+            return
+
+        self._set_running(self.fm_run, True, "Working…")
+        self.fm_progress.set(0)
+        self._log(self.fm_log, f"\n── Starting: {len(self.fm_files.files)} file(s) ──")
+        threading.Thread(
+            target=self._format_worker, daemon=True,
+            kwargs=dict(
+                files=list(self.fm_files.files), find=find, spec=spec,
+                match_case=bool(self.fm_match_case.get()), scope=self.fm_scope.get(),
+            ),
+        ).start()
+
+    def _format_worker(self, files, find, spec, match_case, scope):
+        total = len(files)
+        grand = changed = 0
+        for i, path in enumerate(files, start=1):
+            name = os.path.basename(path)
+            document, result = apply_formatting_in_document(
+                path, find, spec, match_case=match_case, scope=scope
+            )
+            if not result.ok:
+                self._logq(self.fm_log, f"✖ {name}: {result.error}")
+            elif result.matches == 0:
+                self._logq(self.fm_log, f"•  {name}: no matches")
+            else:
+                loc = ", ".join(f"{k}: {v}" for k, v in result.locations.items())
+                saved = self._save_with_backup(
+                    path, document, self.fm_log, name,
+                    f"{result.matches} match(es) formatted ({loc})",
+                )
+                if saved:
+                    grand += result.matches
+                    changed += 1
+            self._progq(self.fm_progress, i / total)
+        self._logq(self.fm_log,
+                   f"── Done: {grand} match(es) formatted across {changed} file(s). ──")
+        self._doneq(self.fm_run, "Apply formatting")
 
     # ----------------------------------------------------------- run: text tab
     def _start_text_run(self):

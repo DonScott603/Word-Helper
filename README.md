@@ -75,6 +75,22 @@ image data is swapped). Identical images used in several places are all updated
 in one pass, including images in headers and footers. Different image formats
 are handled (e.g. replacing a PNG with a JPG). Same `.bak` backup as above.
 
+## Formatting tab
+
+Find text and apply character formatting to **only the matched text** — and only
+the attributes you choose. Anything left alone is untouched.
+
+1. **+ Add files** and enter the **text to find**.
+2. For **Bold / Italic / Underline / Strikethrough**, each control is
+   three-state: **Leave** (don't change), **On**, or **Off**.
+3. Tick **Font**, **Size (pt)**, or **Color (hex)** and fill in a value to set
+   those; leave them unticked to keep them as-is.
+4. **Apply formatting**.
+
+Only the found text is changed — surrounding text and any formatting you didn't
+select are preserved. Works across runs, tables, headers, and footers, with the
+same `.bak` backup.
+
 ## Notes / limitations
 
 - Matching happens within each paragraph. A Find string that spans a paragraph
