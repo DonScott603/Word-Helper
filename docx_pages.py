@@ -14,6 +14,7 @@ come along untouched.
 
 from __future__ import annotations
 
+import copy
 import os
 import shutil
 import tempfile
@@ -21,6 +22,8 @@ from dataclasses import dataclass
 
 import pythoncom
 import win32com.client
+from docx import Document
+from docx.oxml.ns import qn
 
 # Word enum constants
 WD_STAT_PAGES = 2
@@ -253,6 +256,206 @@ def add_pages(target, source, dest=None, insert_after="end",
         result.error = str(exc)
     finally:
         if temp and os.path.exists(temp):
+            try:
+                os.remove(temp)
+            except OSError:
+                pass
+    return result
+
+
+# =====================================================================
+# Record-based operations (a "record" / "document" == one Word section).
+#
+# When Word does a mail merge to a single file, each record becomes its own
+# section, which is why each can have unique headers/footers. So moving whole
+# records means moving whole sections — done by copying the file and trimming
+# sections, which keeps every section's headers/footers/images intact.
+# =====================================================================
+
+
+def count_records(path):
+    """Number of records (sections) in ``path``. Uses python-docx (no Word)."""
+    return len(Document(path).sections)
+
+
+def _promote_last_section(path):
+    """After trimming trailing sections, the removed section's properties can
+    linger at the document-body level, leaving a phantom empty section. Promote
+    the last *kept* section's properties to the body level and drop the leftover.
+    """
+    d = Document(path)
+    body = d.element.body
+    target = None
+    for p in body.findall(qn("w:p")):
+        pPr = p.find(qn("w:pPr"))
+        if pPr is not None and pPr.find(qn("w:sectPr")) is not None:
+            target = (p, pPr, pPr.find(qn("w:sectPr")))
+    if target is None:
+        return
+    p_elem, pPr_elem, sp_elem = target
+    # Delete any paragraphs that belong to the leftover trailing section.
+    seen = False
+    for p in list(body.findall(qn("w:p"))):
+        if seen:
+            body.remove(p)
+        if p is p_elem:
+            seen = True
+    body_sectPr = body.find(qn("w:sectPr"))
+    new_sectPr = copy.deepcopy(sp_elem)
+    if body_sectPr is not None:
+        body.remove(body_sectPr)
+    body.append(new_sectPr)
+    pPr_elem.remove(sp_elem)
+    d.save(path)
+
+
+def _trim_sections(doc, first, last):
+    """Delete every section outside [first, last] (1-based, inclusive).
+    Returns (removed_tail: bool)."""
+    total = doc.Sections.Count
+    first = max(1, first)
+    last = min(last, total)
+    removed_tail = last < total
+    if last < total:
+        doc.Range(doc.Sections(last + 1).Range.Start, doc.Content.End).Delete()
+    if first > 1:
+        doc.Range(0, doc.Sections(first).Range.Start).Delete()
+    return removed_tail
+
+
+def extract_records(source, dest, first, last, remove_from_source=False,
+                    backup=True):
+    """Write records [first, last] of ``source`` to ``dest`` with full fidelity
+    (headers/footers/images preserved). Optionally remove them from the source."""
+    result = PageOpResult()
+    try:
+        total = count_records(source)
+        if first < 1 or first > total:
+            result.ok = False
+            result.error = f"source has {total} document(s); 'from' is out of range"
+            return result
+        last = min(last, total)
+        dest = os.path.abspath(dest)
+        os.makedirs(os.path.dirname(dest) or ".", exist_ok=True)
+        shutil.copy2(source, dest)
+        with WordSession() as app:
+            doc = app.Documents.Open(dest)
+            removed_tail = _trim_sections(doc, first, last)
+            doc.SaveAs2(dest, WD_FORMAT_DOCX)
+            doc.Close(WD_DO_NOT_SAVE)
+        if removed_tail:
+            _promote_last_section(dest)
+        result.output = dest
+        result.pages_affected = last - first + 1
+
+        if remove_from_source:
+            sub = remove_records(source, first, last, backup=backup)
+            if not sub.ok:
+                result.ok = False
+                result.error = f"extracted OK, but removing from source failed: {sub.error}"
+            else:
+                result.source_removed = sub.pages_affected
+    except WordUnavailable as exc:
+        result.ok = False
+        result.error = str(exc)
+    except Exception as exc:
+        result.ok = False
+        result.error = str(exc)
+    return result
+
+
+def remove_records(path, first, last, backup=True):
+    """Delete records (sections) [first, last] from ``path`` in place."""
+    result = PageOpResult()
+    try:
+        total = count_records(path)
+        first = max(1, first)
+        last = min(last, total)
+        if backup:
+            bak = path + ".bak"
+            if not os.path.exists(bak):
+                shutil.copy2(path, bak)
+        with WordSession() as app:
+            doc = app.Documents.Open(os.path.abspath(path))
+            sec_total = doc.Sections.Count
+            removed_tail = last >= sec_total
+            start = doc.Sections(first).Range.Start if first > 1 else 0
+            end = (doc.Sections(last + 1).Range.Start
+                   if last < sec_total else doc.Content.End)
+            doc.Range(start, end).Delete()
+            doc.Save()
+            doc.Close(WD_DO_NOT_SAVE)
+        if removed_tail and first > 1:
+            _promote_last_section(path)
+        result.pages_affected = last - first + 1
+        result.output = path
+    except WordUnavailable as exc:
+        result.ok = False
+        result.error = str(exc)
+    except Exception as exc:
+        result.ok = False
+        result.error = str(exc)
+    return result
+
+
+def _append_document(work_path, insert_path):
+    """Append ``insert_path`` to the end of the already-open-able ``work_path``
+    as its own section(s), preserving the inserted file's headers/footers."""
+    with WordSession() as app:
+        doc = app.Documents.Open(os.path.abspath(work_path))
+        rng = doc.Content
+        rng.Collapse(WD_COLLAPSE_END)
+        rng.InsertBreak(WD_SECTION_BREAK_NEXT_PAGE)
+        rng.Collapse(WD_COLLAPSE_END)
+        rng.InsertFile(os.path.abspath(insert_path))
+        doc.Save()
+        pages = int(doc.ComputeStatistics(WD_STAT_PAGES))
+        doc.Close(WD_DO_NOT_SAVE)
+    return pages
+
+
+def move_records(source, target, first, last, dest=None, backup=True):
+    """Move records [first, last] out of ``source`` and append them to the end
+    of ``target`` (preserving each record's headers/footers). If ``dest`` is
+    given the combined result is written there and ``target`` is left untouched;
+    otherwise ``target`` is modified in place (.bak backup). The records are
+    removed from ``source`` (.bak backup)."""
+    result = PageOpResult()
+    temp = os.path.join(tempfile.gettempdir(), "wh_move_tmp.docx")
+    try:
+        ext = extract_records(source, temp, first, last, remove_from_source=False)
+        if not ext.ok:
+            return ext
+
+        if dest:
+            dest = os.path.abspath(dest)
+            os.makedirs(os.path.dirname(dest) or ".", exist_ok=True)
+            shutil.copy2(target, dest)
+            work = dest
+        else:
+            if backup:
+                bak = target + ".bak"
+                if not os.path.exists(bak):
+                    shutil.copy2(target, bak)
+            work = os.path.abspath(target)
+
+        result.pages_affected = _append_document(work, temp)
+        result.output = work
+
+        rem = remove_records(source, first, last, backup=backup)
+        if not rem.ok:
+            result.ok = False
+            result.error = f"added to target, but removing from source failed: {rem.error}"
+        else:
+            result.source_removed = rem.pages_affected
+    except WordUnavailable as exc:
+        result.ok = False
+        result.error = str(exc)
+    except Exception as exc:
+        result.ok = False
+        result.error = str(exc)
+    finally:
+        if os.path.exists(temp):
             try:
                 os.remove(temp)
             except OSError:

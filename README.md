@@ -91,33 +91,34 @@ Only the found text is changed — surrounding text and any formatting you didn'
 select are preserved. Works across runs, tables, headers, and footers, with the
 same `.bak` backup.
 
-## Add / Extract Pages tab
+## Extract / Move Docs tab
 
-Work with real, rendered pages. Because a `.docx` has no stored page boundaries,
-this tab automates **Microsoft Word** (which must be installed) so page numbers
-match exactly what Word shows, and all formatting — headers/footers, sections,
-styles, images — is preserved.
+Built for **combined mail-merge files** — one `.docx` containing many individual
+documents, each with its own unique headers/footers (including images). Word
+stores each merged record as its own *section*, so this tab works in units of
+**documents (records)**, not raw pages, which is exact and keeps every record's
+headers/footers/images intact.
 
-**Extract pages**
-1. Choose the **source** document (its page count is shown).
-2. Set the page range (**from** / **to**).
-3. Choose where to **save** the extracted pages (a new `.docx`).
-4. Optionally tick **"Also remove these pages from the source"** (`.bak` backup).
+Requires **Microsoft Word** installed. Operations open Word briefly, so they
+take a moment. When you pick a file, its document (record) count is shown.
 
-Extraction works by copying the whole file and deleting the pages outside your
-range, so nothing is rebuilt and fidelity is exact.
+**Extract**
+1. Choose the **source** combined file.
+2. Set the document range (**from** / **to**) — e.g. documents 3 to 5.
+3. Choose where to **save** them (a new `.docx`).
+4. Optionally tick **"Also remove these documents from the source"** (`.bak`).
 
-**Add pages**
-1. Choose the **target** (add into) and **source** (add from) documents.
-2. Source pages: **All** or a **Range**.
-3. Insert **At end** (recommended — keeps the added document's own headers /
-   footers) or **After page N**.
-4. Output to a **New file** or **Overwrite target** (`.bak` backup).
+**Move** (the common case — shift a few records between combined files)
+1. **Move from** the source combined file and set the document range.
+2. **Into** the target combined file.
+3. Output to a **New file** or **Overwrite target** (`.bak`).
 
-> Note: this tab requires Word and is slower than the others (it launches Word
-> briefly). *After page N* inserts mid-document, where Word makes the added
-> pages adopt the target's headers for that section; use *At end* to keep the
-> added document's own headers.
+The chosen documents are appended to the end of the target — each keeping its
+own headers/footers — and removed from the source (with a `.bak` backup).
+
+> A "document" here is one section = one mail-merge record. If your combined
+> file uses one section per record (the Word default for merges), the document
+> numbers line up exactly with the individual letters/records.
 
 ## Notes / limitations
 

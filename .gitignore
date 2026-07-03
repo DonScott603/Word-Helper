@@ -1,6 +1,7 @@
-# Word Helper backups
+# Word Helper backups / test artifacts
 *.bak
 *.docx.bak
+*.docx
 
 # PyInstaller build artifacts
 build/
