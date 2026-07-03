@@ -273,9 +273,45 @@ def add_pages(target, source, dest=None, insert_after="end",
 # =====================================================================
 
 
+def _section_body_groups(doc):
+    """Split the body into per-section lists of paragraph text. len == #sections."""
+    body = doc.element.body
+    groups, cur = [], []
+    for child in body.iterchildren():
+        if child.tag == qn("w:p"):
+            cur.append("".join(t.text or "" for t in child.findall(".//" + qn("w:t"))))
+            pPr = child.find(qn("w:pPr"))
+            if pPr is not None and pPr.find(qn("w:sectPr")) is not None:
+                groups.append(cur)
+                cur = []
+    groups.append(cur)  # final (body-level) section
+    return groups
+
+
+def _trailing_empty_count(doc):
+    """How many trailing sections have no text (Word mail-merge leaves one)."""
+    n = 0
+    for g in reversed(_section_body_groups(doc)):
+        if any(t.strip() for t in g):
+            break
+        n += 1
+    return n
+
+
 def count_records(path):
-    """Number of records (sections) in ``path``. Uses python-docx (no Word)."""
-    return len(Document(path).sections)
+    """Number of real records (sections) in ``path``, excluding the empty
+    trailing section that Word's mail merge leaves behind. Uses python-docx."""
+    doc = Document(path)
+    return max(0, len(doc.sections) - _trailing_empty_count(doc))
+
+
+def _strip_trailing_empty_section(path):
+    """If the document ends with an empty section, remove it (promoting the last
+    real section's properties to the body level). No-op otherwise."""
+    doc = Document(path)
+    if _trailing_empty_count(doc) == 0:
+        return
+    _promote_last_section(path)
 
 
 def _promote_last_section(path):
@@ -345,6 +381,7 @@ def extract_records(source, dest, first, last, remove_from_source=False,
             doc.Close(WD_DO_NOT_SAVE)
         if removed_tail:
             _promote_last_section(dest)
+        _strip_trailing_empty_section(dest)
         result.output = dest
         result.pages_affected = last - first + 1
 
@@ -439,6 +476,9 @@ def move_records(source, target, first, last, dest=None, backup=True):
                     shutil.copy2(target, bak)
             work = os.path.abspath(target)
 
+        # Drop the target's empty trailing section so the moved records append
+        # right after the last real record (not after a stranded blank section).
+        _strip_trailing_empty_section(work)
         result.pages_affected = _append_document(work, temp)
         result.output = work
 
