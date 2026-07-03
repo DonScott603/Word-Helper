@@ -24,6 +24,7 @@ from PIL import Image as PILImage
 from docx_replace import replace_in_document
 from docx_image_replace import replace_images_in_document, read_image_info
 from docx_format import apply_formatting_in_document, FormatSpec
+from docx_pages import extract_pages, add_pages, count_pages
 
 APP_NAME = "Word Helper"
 ACCENT = "#3d7eff"
@@ -169,6 +170,32 @@ class ImagePicker(ctk.CTkFrame):
             self.preview.configure(image="", text="(no preview)")
 
 
+class FilePick(ctk.CTkFrame):
+    """A single-file chooser: label + button + selected-name/info line."""
+
+    def __init__(self, master, label, filetypes=DOCX_TYPES, on_change=None):
+        super().__init__(master, fg_color="transparent")
+        self.path: str | None = None
+        self.filetypes = filetypes
+        self.on_change = on_change
+        ctk.CTkLabel(self, text=label, width=120, anchor="w").pack(side="left")
+        ctk.CTkButton(
+            self, text="Choose…", width=90, fg_color=ACCENT,
+            hover_color=ACCENT_HOVER, command=self._pick,
+        ).pack(side="left", padx=(0, 8))
+        self.info = ctk.CTkLabel(self, text="(none)", text_color=GREY, anchor="w")
+        self.info.pack(side="left", fill="x", expand=True)
+
+    def _pick(self):
+        p = filedialog.askopenfilename(title="Select document", filetypes=self.filetypes)
+        if not p:
+            return
+        self.path = p
+        self.info.configure(text=os.path.basename(p))
+        if self.on_change:
+            self.on_change(p, self.info)
+
+
 # ------------------------------------------------------------------------- app
 class WordHelperApp(ctk.CTk):
     def __init__(self):
@@ -193,6 +220,9 @@ class WordHelperApp(ctk.CTk):
 
         self.tabview.add("Formatting")
         self.build_formatting_tab(self.tabview.tab("Formatting"))
+
+        self.tabview.add("Add / Extract Pages")
+        self.build_pages_tab(self.tabview.tab("Add / Extract Pages"))
 
         self.after(100, self._drain_queue)
 
@@ -461,6 +491,305 @@ class WordHelperApp(ctk.CTk):
                    f"── Done: {grand} match(es) formatted across {changed} file(s). ──")
         self._doneq(self.fm_run, "Apply formatting")
 
+    # -------------------------------------------------------------- pages UI
+    def _pages_show_count(self, path, label):
+        """Count pages in a background Word instance and append to the label."""
+        base = os.path.basename(path)
+        label.configure(text=f"{base}  ·  counting…")
+
+        def work():
+            try:
+                n = count_pages(path)
+                self._ui(lambda: label.configure(text=f"{base}  ·  {n} pages"))
+            except Exception:
+                self._ui(lambda: label.configure(text=base))
+        threading.Thread(target=work, daemon=True).start()
+
+    def _choose_save(self, attr, label):
+        p = filedialog.asksaveasfilename(
+            title="Save result as", defaultextension=".docx", filetypes=DOCX_TYPES
+        )
+        if p:
+            setattr(self, attr, p)
+            label.configure(text=os.path.basename(p))
+
+    def build_pages_tab(self, tab):
+        tab.grid_columnconfigure(0, weight=1)
+        tab.grid_rowconfigure(3, weight=1)  # log grows
+
+        note = ctk.CTkLabel(
+            tab,
+            text="Uses Microsoft Word to work with real pages — Word must be "
+                 "installed. Operations open Word briefly, so they take a moment.",
+            text_color=GREY, font=ctk.CTkFont(size=12), justify="left",
+        )
+        note.grid(row=0, column=0, sticky="w", pady=(8, 6))
+
+        self.pg_mode = ctk.CTkSegmentedButton(
+            tab, values=["Extract pages", "Add pages"], command=self._pg_switch_mode
+        )
+        self.pg_mode.set("Extract pages")
+        self.pg_mode.grid(row=1, column=0, sticky="w", pady=(0, 8))
+
+        container = ctk.CTkFrame(tab, fg_color=CARD, corner_radius=8)
+        container.grid(row=2, column=0, sticky="ew")
+        container.grid_columnconfigure(0, weight=1)
+
+        # --- Extract frame ---
+        self._pg_extract = ext = ctk.CTkFrame(container, fg_color="transparent")
+        ext.grid(row=0, column=0, sticky="ew", padx=14, pady=12)
+        ext.grid_columnconfigure(0, weight=1)
+        self.pg_ex_src = FilePick(ext, "Source document", on_change=self._pages_show_count)
+        self.pg_ex_src.grid(row=0, column=0, sticky="ew", pady=4)
+        rng = ctk.CTkFrame(ext, fg_color="transparent")
+        rng.grid(row=1, column=0, sticky="w", pady=4)
+        ctk.CTkLabel(rng, text="Pages   from").pack(side="left")
+        self.pg_ex_from = ctk.CTkEntry(rng, width=60)
+        self.pg_ex_from.insert(0, "1")
+        self.pg_ex_from.pack(side="left", padx=6)
+        ctk.CTkLabel(rng, text="to").pack(side="left")
+        self.pg_ex_to = ctk.CTkEntry(rng, width=60)
+        self.pg_ex_to.insert(0, "1")
+        self.pg_ex_to.pack(side="left", padx=6)
+        out = ctk.CTkFrame(ext, fg_color="transparent")
+        out.grid(row=2, column=0, sticky="ew", pady=4)
+        ctk.CTkLabel(out, text="Save extracted to", width=120, anchor="w").pack(side="left")
+        self.pg_ex_out_label = ctk.CTkLabel(out, text="(none)", text_color=GREY, anchor="w")
+        ctk.CTkButton(
+            out, text="Choose…", width=90, fg_color=ACCENT, hover_color=ACCENT_HOVER,
+            command=lambda: self._choose_save("pg_ex_out_path", self.pg_ex_out_label),
+        ).pack(side="left", padx=(0, 8))
+        self.pg_ex_out_label.pack(side="left", fill="x", expand=True)
+        self.pg_ex_remove = ctk.CTkCheckBox(
+            ext, text="Also remove these pages from the source (.bak backup)"
+        )
+        self.pg_ex_remove.grid(row=3, column=0, sticky="w", pady=(8, 2))
+
+        # --- Add frame ---
+        self._pg_add = add = ctk.CTkFrame(container, fg_color="transparent")
+        add.grid(row=0, column=0, sticky="ew", padx=14, pady=12)
+        add.grid_columnconfigure(0, weight=1)
+        self.pg_add_tgt = FilePick(add, "Add into (target)", on_change=self._pages_show_count)
+        self.pg_add_tgt.grid(row=0, column=0, sticky="ew", pady=4)
+        self.pg_add_src = FilePick(add, "Pages from (source)", on_change=self._pages_show_count)
+        self.pg_add_src.grid(row=1, column=0, sticky="ew", pady=4)
+
+        srow = ctk.CTkFrame(add, fg_color="transparent")
+        srow.grid(row=2, column=0, sticky="w", pady=4)
+        ctk.CTkLabel(srow, text="Source pages:").pack(side="left", padx=(0, 6))
+        self.pg_add_srcmode = ctk.CTkSegmentedButton(
+            srow, values=["All", "Range"], command=lambda _: self._pg_toggle_srcrange()
+        )
+        self.pg_add_srcmode.set("All")
+        self.pg_add_srcmode.pack(side="left")
+        self.pg_add_sfrom = ctk.CTkEntry(srow, width=54)
+        self.pg_add_sfrom.insert(0, "1")
+        self.pg_add_sto = ctk.CTkEntry(srow, width=54)
+        self.pg_add_sto.insert(0, "1")
+
+        prow = ctk.CTkFrame(add, fg_color="transparent")
+        prow.grid(row=3, column=0, sticky="w", pady=4)
+        ctk.CTkLabel(prow, text="Insert:").pack(side="left", padx=(0, 6))
+        self.pg_add_pos = ctk.CTkSegmentedButton(
+            prow, values=["At end", "After page"],
+            command=lambda _: self._pg_toggle_afterpage(),
+        )
+        self.pg_add_pos.set("At end")
+        self.pg_add_pos.pack(side="left")
+        self.pg_add_posnum = ctk.CTkEntry(prow, width=54)
+        self.pg_add_posnum.insert(0, "1")
+
+        orow = ctk.CTkFrame(add, fg_color="transparent")
+        orow.grid(row=4, column=0, sticky="ew", pady=4)
+        ctk.CTkLabel(orow, text="Output:").pack(side="left", padx=(0, 6))
+        self.pg_add_outmode = ctk.CTkSegmentedButton(
+            orow, values=["New file", "Overwrite target"],
+            command=lambda _: self._pg_toggle_output(),
+        )
+        self.pg_add_outmode.set("New file")
+        self.pg_add_outmode.pack(side="left")
+        self.pg_add_out_btn = ctk.CTkButton(
+            orow, text="Choose…", width=90, fg_color=ACCENT, hover_color=ACCENT_HOVER,
+            command=lambda: self._choose_save("pg_add_out_path", self.pg_add_out_label),
+        )
+        self.pg_add_out_btn.pack(side="left", padx=(8, 8))
+        self.pg_add_out_label = ctk.CTkLabel(orow, text="(none)", text_color=GREY, anchor="w")
+        self.pg_add_out_label.pack(side="left", fill="x", expand=True)
+
+        self.pg_add_hdrnote = ctk.CTkLabel(
+            add,
+            text="“At end” keeps the added document’s own headers/footers. "
+                 "“After page” inserts mid-document, where the added pages take "
+                 "on the target’s headers (a Word limitation).",
+            text_color=GREY, font=ctk.CTkFont(size=12), wraplength=760, justify="left",
+        )
+        self.pg_add_hdrnote.grid(row=5, column=0, sticky="w", pady=(8, 0))
+
+        self.pg_run, self.pg_progress, self.pg_log = self._build_run_panel(
+            tab, 2 + 1, "Extract", self._start_pages_run
+        )
+        # run panel was gridded at rows 3/4; move log weight there
+        tab.grid_rowconfigure(3, weight=0)
+        tab.grid_rowconfigure(4, weight=1)
+
+        self._pg_toggle_srcrange()
+        self._pg_toggle_afterpage()
+        self._pg_toggle_output()
+        self._pg_switch_mode("Extract pages")
+        self._log(self.pg_log, "Choose a mode, fill in the fields, then run.")
+
+    def _pg_switch_mode(self, mode):
+        if mode == "Extract pages":
+            self._pg_add.grid_remove()
+            self._pg_extract.grid()
+            self.pg_run.configure(text="Extract")
+        else:
+            self._pg_extract.grid_remove()
+            self._pg_add.grid()
+            self.pg_run.configure(text="Add")
+
+    def _pg_toggle_srcrange(self):
+        if self.pg_add_srcmode.get() == "Range":
+            self.pg_add_sfrom.pack(side="left", padx=(10, 4))
+            self.pg_add_sto.pack(side="left", padx=4)
+        else:
+            self.pg_add_sfrom.pack_forget()
+            self.pg_add_sto.pack_forget()
+
+    def _pg_toggle_afterpage(self):
+        if self.pg_add_pos.get() == "After page":
+            self.pg_add_posnum.pack(side="left", padx=(8, 0))
+        else:
+            self.pg_add_posnum.pack_forget()
+
+    def _pg_toggle_output(self):
+        new_file = self.pg_add_outmode.get() == "New file"
+        if new_file:
+            self.pg_add_out_btn.configure(state="normal")
+        else:
+            self.pg_add_out_btn.configure(state="disabled")
+
+    # ------------------------------------------------------------ run: pages
+    def _parse_int(self, entry, name, log):
+        try:
+            v = int(entry.get().strip())
+            if v < 1:
+                raise ValueError
+            return v
+        except ValueError:
+            self._log(log, f"⚠ {name} must be a whole number ≥ 1.")
+            return None
+
+    def _start_pages_run(self):
+        if self._running:
+            return
+        if self.pg_mode.get() == "Extract pages":
+            self._run_extract()
+        else:
+            self._run_add()
+
+    def _run_extract(self):
+        src = self.pg_ex_src.path
+        out = getattr(self, "pg_ex_out_path", None)
+        if not src:
+            self._log(self.pg_log, "⚠ Choose a source document.")
+            return
+        if not out:
+            self._log(self.pg_log, "⚠ Choose where to save the extracted pages.")
+            return
+        frm = self._parse_int(self.pg_ex_from, "From page", self.pg_log)
+        to = self._parse_int(self.pg_ex_to, "To page", self.pg_log)
+        if frm is None or to is None:
+            return
+        if to < frm:
+            self._log(self.pg_log, "⚠ 'To' page must be ≥ 'From' page.")
+            return
+        remove = bool(self.pg_ex_remove.get())
+
+        self._set_running(self.pg_run, True, "Working…")
+        self._pg_busy(True)
+        self._log(self.pg_log, f"\n── Extracting pages {frm}–{to} … ──")
+
+        def work():
+            result = extract_pages(src, out, frm, to, remove_from_source=remove)
+            if result.ok:
+                msg = (f"✔ Extracted {result.pages_affected} page(s) → "
+                       f"{os.path.basename(result.output)}")
+                if result.source_removed:
+                    msg += f"; removed {result.source_removed} page(s) from source"
+                self._logq(self.pg_log, msg)
+            else:
+                self._logq(self.pg_log, f"✖ {result.error}")
+            self._pg_busyq(False)
+            self._doneq(self.pg_run, "Extract")
+        threading.Thread(target=work, daemon=True).start()
+
+    def _run_add(self):
+        target = self.pg_add_tgt.path
+        source = self.pg_add_src.path
+        if not target:
+            self._log(self.pg_log, "⚠ Choose a target document to add into.")
+            return
+        if not source:
+            self._log(self.pg_log, "⚠ Choose a source document to add from.")
+            return
+
+        insert_after = "end"
+        if self.pg_add_pos.get() == "After page":
+            page = self._parse_int(self.pg_add_posnum, "After page", self.pg_log)
+            if page is None:
+                return
+            insert_after = page
+
+        s_from = s_to = None
+        if self.pg_add_srcmode.get() == "Range":
+            s_from = self._parse_int(self.pg_add_sfrom, "Source from", self.pg_log)
+            s_to = self._parse_int(self.pg_add_sto, "Source to", self.pg_log)
+            if s_from is None or s_to is None:
+                return
+            if s_to < s_from:
+                self._log(self.pg_log, "⚠ Source 'to' must be ≥ 'from'.")
+                return
+
+        dest = None
+        if self.pg_add_outmode.get() == "New file":
+            dest = getattr(self, "pg_add_out_path", None)
+            if not dest:
+                self._log(self.pg_log, "⚠ Choose an output file (or switch to Overwrite target).")
+                return
+
+        self._set_running(self.pg_run, True, "Working…")
+        self._pg_busy(True)
+        where = "at end" if insert_after == "end" else f"after page {insert_after}"
+        self._log(self.pg_log, f"\n── Adding {os.path.basename(source)} {where} … ──")
+
+        def work():
+            result = add_pages(target, source, dest=dest, insert_after=insert_after,
+                               src_start=s_from, src_end=s_to)
+            if result.ok:
+                self._logq(
+                    self.pg_log,
+                    f"✔ Added → {os.path.basename(result.output)} "
+                    f"({result.pages_affected} page(s) total)",
+                )
+            else:
+                self._logq(self.pg_log, f"✖ {result.error}")
+            self._pg_busyq(False)
+            self._doneq(self.pg_run, "Add")
+        threading.Thread(target=work, daemon=True).start()
+
+    def _pg_busy(self, on):
+        if on:
+            self.pg_progress.configure(mode="indeterminate")
+            self.pg_progress.start()
+        else:
+            self.pg_progress.stop()
+            self.pg_progress.configure(mode="determinate")
+            self.pg_progress.set(1)
+
+    def _pg_busyq(self, on):
+        self._ui(lambda: self._pg_busy(on))
+
     # ----------------------------------------------------------- run: text tab
     def _start_text_run(self):
         if self._running:
@@ -621,5 +950,29 @@ class WordHelperApp(ctk.CTk):
         log_box.configure(state="disabled")
 
 
+def _selftest_pages(outfile):
+    """Headless check that Word automation works in this (possibly frozen)
+    build. Writes a one-line result to ``outfile``."""
+    import tempfile
+    from docx import Document
+    try:
+        p = os.path.join(tempfile.gettempdir(), "wh_selftest.docx")
+        doc = Document()
+        doc.add_paragraph("page one")
+        doc.add_page_break()
+        doc.add_paragraph("page two")
+        doc.save(p)
+        n = count_pages(p)
+        result = f"OK pages={n}"
+    except Exception as exc:
+        result = f"ERR {exc}"
+    with open(outfile, "w", encoding="utf-8") as fh:
+        fh.write(result)
+
+
 if __name__ == "__main__":
-    WordHelperApp().mainloop()
+    import sys
+    if len(sys.argv) >= 3 and sys.argv[1] == "--selftest-pages":
+        _selftest_pages(sys.argv[2])
+    else:
+        WordHelperApp().mainloop()

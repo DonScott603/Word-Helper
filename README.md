@@ -91,6 +91,34 @@ Only the found text is changed — surrounding text and any formatting you didn'
 select are preserved. Works across runs, tables, headers, and footers, with the
 same `.bak` backup.
 
+## Add / Extract Pages tab
+
+Work with real, rendered pages. Because a `.docx` has no stored page boundaries,
+this tab automates **Microsoft Word** (which must be installed) so page numbers
+match exactly what Word shows, and all formatting — headers/footers, sections,
+styles, images — is preserved.
+
+**Extract pages**
+1. Choose the **source** document (its page count is shown).
+2. Set the page range (**from** / **to**).
+3. Choose where to **save** the extracted pages (a new `.docx`).
+4. Optionally tick **"Also remove these pages from the source"** (`.bak` backup).
+
+Extraction works by copying the whole file and deleting the pages outside your
+range, so nothing is rebuilt and fidelity is exact.
+
+**Add pages**
+1. Choose the **target** (add into) and **source** (add from) documents.
+2. Source pages: **All** or a **Range**.
+3. Insert **At end** (recommended — keeps the added document's own headers /
+   footers) or **After page N**.
+4. Output to a **New file** or **Overwrite target** (`.bak` backup).
+
+> Note: this tab requires Word and is slower than the others (it launches Word
+> briefly). *After page N* inserts mid-document, where Word makes the added
+> pages adopt the target's headers for that section; use *At end* to keep the
+> added document's own headers.
+
 ## Notes / limitations
 
 - Matching happens within each paragraph. A Find string that spans a paragraph
