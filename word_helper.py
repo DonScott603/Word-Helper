@@ -24,7 +24,7 @@ from PIL import Image as PILImage
 from docx_replace import replace_in_document
 from docx_image_replace import replace_images_in_document, read_image_info
 from docx_format import apply_formatting_in_document, FormatSpec
-from docx_pages import count_records, extract_records, move_records
+from docx_pages import count_records, record_names, extract_records, move_records
 
 APP_NAME = "Word Helper"
 ACCENT = "#3d7eff"
@@ -194,6 +194,58 @@ class FilePick(ctk.CTkFrame):
         self.info.configure(text=os.path.basename(p))
         if self.on_change:
             self.on_change(p, self.info)
+
+
+class RecordChecklist(ctk.CTkFrame):
+    """A scrollable checklist of a document's records, labelled by recipient
+    name, with Select all / none. ``selected()`` returns 1-based indices."""
+
+    def __init__(self, master, title="Documents"):
+        super().__init__(master, fg_color="transparent")
+        bar = ctk.CTkFrame(self, fg_color="transparent")
+        bar.pack(fill="x")
+        ctk.CTkLabel(
+            bar, text=title, font=ctk.CTkFont(size=13, weight="bold")
+        ).pack(side="left")
+        ctk.CTkButton(bar, text="None", width=56, fg_color="#3a3d44",
+                      hover_color="#4a4e57",
+                      command=lambda: self.select_all(False)).pack(side="right")
+        ctk.CTkButton(bar, text="All", width=56, fg_color="#3a3d44",
+                      hover_color="#4a4e57",
+                      command=lambda: self.select_all(True)).pack(side="right", padx=(0, 8))
+        self._list = ctk.CTkScrollableFrame(self, height=150, label_text="")
+        self._list.pack(fill="both", expand=True, pady=(4, 0))
+        self.vars: list = []
+        self.set_status("Choose a source file to list its documents.")
+
+    def set_status(self, text):
+        for c in self._list.winfo_children():
+            c.destroy()
+        self.vars = []
+        ctk.CTkLabel(self._list, text=text, text_color=GREY).pack(
+            anchor="w", padx=6, pady=6)
+
+    def load(self, names):
+        for c in self._list.winfo_children():
+            c.destroy()
+        self.vars = []
+        if not names:
+            self.set_status("No documents found in this file.")
+            return
+        for i, name in enumerate(names, start=1):
+            var = ctk.IntVar(value=0)
+            ctk.CTkCheckBox(
+                self._list, text=f"{i}.  {name}", variable=var,
+                checkbox_width=18, checkbox_height=18,
+            ).pack(anchor="w", padx=4, pady=1)
+            self.vars.append(var)
+
+    def select_all(self, value):
+        for v in self.vars:
+            v.set(1 if value else 0)
+
+    def selected(self):
+        return [i + 1 for i, v in enumerate(self.vars) if v.get()]
 
 
 # ------------------------------------------------------------------------- app
@@ -512,19 +564,28 @@ class WordHelperApp(ctk.CTk):
             setattr(self, attr, p)
             label.configure(text=os.path.basename(p))
 
-    def _docs_range(self, parent, row):
-        """A 'Documents  from [ ] to [ ]' row; returns (from_entry, to_entry)."""
-        rng = ctk.CTkFrame(parent, fg_color="transparent")
-        rng.grid(row=row, column=0, sticky="w", pady=4)
-        ctk.CTkLabel(rng, text="Documents   from").pack(side="left")
-        e_from = ctk.CTkEntry(rng, width=60)
-        e_from.insert(0, "1")
-        e_from.pack(side="left", padx=6)
-        ctk.CTkLabel(rng, text="to").pack(side="left")
-        e_to = ctk.CTkEntry(rng, width=60)
-        e_to.insert(0, "1")
-        e_to.pack(side="left", padx=6)
-        return e_from, e_to
+    def _load_records(self, checklist):
+        """Return an on_change callback that fills ``checklist`` with the file's
+        record names (and shows the count on the picker label)."""
+        def cb(path, label):
+            base = os.path.basename(path)
+            checklist.set_status("Reading documents…")
+
+            def work():
+                try:
+                    names = record_names(path)
+
+                    def done():
+                        label.configure(text=f"{base}  ·  {len(names)} document(s)")
+                        checklist.load(names)
+                    self._ui(done)
+                except Exception:
+                    self._ui(lambda: (
+                        label.configure(text=base),
+                        checklist.set_status("Could not read this file."),
+                    ))
+            threading.Thread(target=work, daemon=True).start()
+        return cb
 
     def build_pages_tab(self, tab):
         tab.grid_columnconfigure(0, weight=1)
@@ -532,8 +593,8 @@ class WordHelperApp(ctk.CTk):
         note = ctk.CTkLabel(
             tab,
             text="Works with whole documents (each mail-merge record is one "
-                 "section with its own headers/footers). Requires Microsoft Word; "
-                 "operations open Word briefly, so they take a moment.",
+                 "section with its own headers/footers). Tick the recipients to "
+                 "act on. Requires Microsoft Word; operations open Word briefly.",
             text_color=GREY, font=ctk.CTkFont(size=12), justify="left", wraplength=820,
         )
         note.grid(row=0, column=0, sticky="w", pady=(8, 6))
@@ -552,9 +613,11 @@ class WordHelperApp(ctk.CTk):
         self._pg_extract = ext = ctk.CTkFrame(container, fg_color="transparent")
         ext.grid(row=0, column=0, sticky="ew", padx=14, pady=12)
         ext.grid_columnconfigure(0, weight=1)
-        self.pg_ex_src = FilePick(ext, "From (source)", on_change=self._pages_show_count)
+        self.pg_ex_src = FilePick(ext, "From (source)")
         self.pg_ex_src.grid(row=0, column=0, sticky="ew", pady=4)
-        self.pg_ex_from, self.pg_ex_to = self._docs_range(ext, 1)
+        self.pg_ex_records = RecordChecklist(ext, "Documents to extract")
+        self.pg_ex_records.grid(row=1, column=0, sticky="ew", pady=4)
+        self.pg_ex_src.on_change = self._load_records(self.pg_ex_records)
         out = ctk.CTkFrame(ext, fg_color="transparent")
         out.grid(row=2, column=0, sticky="ew", pady=4)
         ctk.CTkLabel(out, text="Save extracted to", width=120, anchor="w").pack(side="left")
@@ -573,9 +636,11 @@ class WordHelperApp(ctk.CTk):
         self._pg_move = mv = ctk.CTkFrame(container, fg_color="transparent")
         mv.grid(row=0, column=0, sticky="ew", padx=14, pady=12)
         mv.grid_columnconfigure(0, weight=1)
-        self.pg_mv_src = FilePick(mv, "Move from", on_change=self._pages_show_count)
+        self.pg_mv_src = FilePick(mv, "Move from")
         self.pg_mv_src.grid(row=0, column=0, sticky="ew", pady=4)
-        self.pg_mv_from, self.pg_mv_to = self._docs_range(mv, 1)
+        self.pg_mv_records = RecordChecklist(mv, "Documents to move")
+        self.pg_mv_records.grid(row=1, column=0, sticky="ew", pady=4)
+        self.pg_mv_src.on_change = self._load_records(self.pg_mv_records)
         self.pg_mv_tgt = FilePick(mv, "Into (target)", on_change=self._pages_show_count)
         self.pg_mv_tgt.grid(row=2, column=0, sticky="ew", pady=4)
 
@@ -598,7 +663,7 @@ class WordHelperApp(ctk.CTk):
 
         ctk.CTkLabel(
             mv,
-            text="The chosen documents are appended to the end of the target "
+            text="The ticked documents are appended to the end of the target "
                  "(keeping each one’s own headers/footers) and removed from the "
                  "source (.bak backup).",
             text_color=GREY, font=ctk.CTkFont(size=12), wraplength=820, justify="left",
@@ -611,7 +676,7 @@ class WordHelperApp(ctk.CTk):
 
         self._pg_toggle_output()
         self._pg_switch_mode("Extract")
-        self._log(self.pg_log, "Choose Extract or Move, fill in the fields, then run.")
+        self._log(self.pg_log, "Pick a file, tick the documents, then run.")
 
     def _pg_switch_mode(self, mode):
         if mode == "Extract":
@@ -655,21 +720,18 @@ class WordHelperApp(ctk.CTk):
         if not out:
             self._log(self.pg_log, "⚠ Choose where to save the extracted documents.")
             return
-        frm = self._parse_int(self.pg_ex_from, "From", self.pg_log)
-        to = self._parse_int(self.pg_ex_to, "To", self.pg_log)
-        if frm is None or to is None:
-            return
-        if to < frm:
-            self._log(self.pg_log, "⚠ 'To' must be ≥ 'From'.")
+        picks = self.pg_ex_records.selected()
+        if not picks:
+            self._log(self.pg_log, "⚠ Tick at least one document to extract.")
             return
         remove = bool(self.pg_ex_remove.get())
 
         self._set_running(self.pg_run, True, "Working…")
         self._pg_busy(True)
-        self._log(self.pg_log, f"\n── Extracting document(s) {frm}–{to} … ──")
+        self._log(self.pg_log, f"\n── Extracting {len(picks)} document(s) … ──")
 
         def work():
-            result = extract_records(src, out, frm, to, remove_from_source=remove)
+            result = extract_records(src, out, picks, remove_from_source=remove)
             if result.ok:
                 msg = (f"✔ Extracted {result.pages_affected} document(s) → "
                        f"{os.path.basename(result.output)}")
@@ -694,12 +756,9 @@ class WordHelperApp(ctk.CTk):
         if os.path.abspath(source) == os.path.abspath(target):
             self._log(self.pg_log, "⚠ Source and target must be different files.")
             return
-        frm = self._parse_int(self.pg_mv_from, "From", self.pg_log)
-        to = self._parse_int(self.pg_mv_to, "To", self.pg_log)
-        if frm is None or to is None:
-            return
-        if to < frm:
-            self._log(self.pg_log, "⚠ 'To' must be ≥ 'From'.")
+        picks = self.pg_mv_records.selected()
+        if not picks:
+            self._log(self.pg_log, "⚠ Tick at least one document to move.")
             return
         dest = None
         if self.pg_mv_outmode.get() == "New file":
@@ -711,11 +770,11 @@ class WordHelperApp(ctk.CTk):
         self._set_running(self.pg_run, True, "Working…")
         self._pg_busy(True)
         self._log(self.pg_log,
-                  f"\n── Moving document(s) {frm}–{to} into "
+                  f"\n── Moving {len(picks)} document(s) into "
                   f"{os.path.basename(target)} … ──")
 
         def work():
-            result = move_records(source, target, frm, to, dest=dest)
+            result = move_records(source, target, picks, dest=dest)
             if result.ok:
                 self._logq(
                     self.pg_log,

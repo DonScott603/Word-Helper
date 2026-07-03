@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import copy
 import os
+import re
 import shutil
 import tempfile
 from dataclasses import dataclass
@@ -345,48 +346,97 @@ def _promote_last_section(path):
     d.save(path)
 
 
-def _trim_sections(doc, first, last):
-    """Delete every section outside [first, last] (1-based, inclusive).
-    Returns (removed_tail: bool)."""
+_DATE_RE = re.compile(
+    r"^\s*(January|February|March|April|May|June|July|August|September|"
+    r"October|November|December)\s+\d{1,2},?\s+\d{4}\s*$", re.I)
+
+
+def record_names(path):
+    """A short label for each real record — the recipient line of each section
+    (first non-empty, non-date body line). Aligns 1:1 with count_records()."""
+    doc = Document(path)
+    groups = _section_body_groups(doc)
+    te = _trailing_empty_count(doc)
+    real = groups[: len(groups) - te] if te else groups
+    names = []
+    for i, g in enumerate(real, start=1):
+        lines = [t.strip() for t in g if t.strip()]
+        name = next((ln for ln in lines if not _DATE_RE.match(ln)), None)
+        if not name and lines:
+            name = lines[0]
+        names.append((name or f"Document {i}")[:60])
+    return names
+
+
+def _group_ranges(nums):
+    """Group a list of ints into contiguous [start, end] ranges."""
+    out = []
+    for n in sorted(set(nums)):
+        if out and n == out[-1][1] + 1:
+            out[-1][1] = n
+        else:
+            out.append([n, n])
+    return out
+
+
+def _delete_sections(doc, del_indices):
+    """Delete the given 1-based section indices from an open Word document.
+    Returns True if the document's tail (last section) was deleted."""
     total = doc.Sections.Count
-    first = max(1, first)
-    last = min(last, total)
-    removed_tail = last < total
-    if last < total:
-        doc.Range(doc.Sections(last + 1).Range.Start, doc.Content.End).Delete()
-    if first > 1:
-        doc.Range(0, doc.Sections(first).Range.Start).Delete()
-    return removed_tail
+    del_indices = [k for k in del_indices if 1 <= k <= total]
+    if not del_indices:
+        return False
+    # Capture absolute start positions up front; deleting higher-numbered
+    # sections never shifts the positions of lower-numbered content.
+    starts = {k: doc.Sections(k).Range.Start for k in range(1, total + 1)}
+    content_end = doc.Content.End
+    tail = False
+    for a, b in sorted(_group_ranges(del_indices), reverse=True):
+        start_pos = starts[a] if a > 1 else 0
+        if b < total:
+            end_pos = starts[b + 1]
+        else:
+            end_pos = content_end
+            tail = True
+        doc.Range(start_pos, end_pos).Delete()
+    return tail
 
 
-def extract_records(source, dest, first, last, remove_from_source=False,
-                    backup=True):
-    """Write records [first, last] of ``source`` to ``dest`` with full fidelity
+def _normalize_indices(indices, total):
+    return sorted({int(i) for i in indices if 1 <= int(i) <= total})
+
+
+def extract_records(source, dest, indices, remove_from_source=False, backup=True):
+    """Write records ``indices`` (a list of 1-based record numbers, any order,
+    possibly non-contiguous) of ``source`` to ``dest`` with full fidelity
     (headers/footers/images preserved). Optionally remove them from the source."""
     result = PageOpResult()
     try:
         total = count_records(source)
-        if first < 1 or first > total:
+        indices = _normalize_indices(indices, total)
+        if not indices:
             result.ok = False
-            result.error = f"source has {total} document(s); 'from' is out of range"
+            result.error = f"no valid documents selected (source has {total})"
             return result
-        last = min(last, total)
         dest = os.path.abspath(dest)
         os.makedirs(os.path.dirname(dest) or ".", exist_ok=True)
         shutil.copy2(source, dest)
+        keep = set(indices)
         with WordSession() as app:
             doc = app.Documents.Open(dest)
-            removed_tail = _trim_sections(doc, first, last)
+            sec_total = doc.Sections.Count
+            del_idx = [k for k in range(1, sec_total + 1) if k not in keep]
+            tail = _delete_sections(doc, del_idx)
             doc.SaveAs2(dest, WD_FORMAT_DOCX)
             doc.Close(WD_DO_NOT_SAVE)
-        if removed_tail:
+        if tail:
             _promote_last_section(dest)
         _strip_trailing_empty_section(dest)
         result.output = dest
-        result.pages_affected = last - first + 1
+        result.pages_affected = len(indices)
 
         if remove_from_source:
-            sub = remove_records(source, first, last, backup=backup)
+            sub = remove_records(source, indices, backup=backup)
             if not sub.ok:
                 result.ok = False
                 result.error = f"extracted OK, but removing from source failed: {sub.error}"
@@ -401,30 +451,28 @@ def extract_records(source, dest, first, last, remove_from_source=False,
     return result
 
 
-def remove_records(path, first, last, backup=True):
-    """Delete records (sections) [first, last] from ``path`` in place."""
+def remove_records(path, indices, backup=True):
+    """Delete records ``indices`` (1-based, any order) from ``path`` in place."""
     result = PageOpResult()
     try:
         total = count_records(path)
-        first = max(1, first)
-        last = min(last, total)
+        indices = _normalize_indices(indices, total)
+        if not indices:
+            result.ok = False
+            result.error = f"no valid documents selected (file has {total})"
+            return result
         if backup:
             bak = path + ".bak"
             if not os.path.exists(bak):
                 shutil.copy2(path, bak)
         with WordSession() as app:
             doc = app.Documents.Open(os.path.abspath(path))
-            sec_total = doc.Sections.Count
-            removed_tail = last >= sec_total
-            start = doc.Sections(first).Range.Start if first > 1 else 0
-            end = (doc.Sections(last + 1).Range.Start
-                   if last < sec_total else doc.Content.End)
-            doc.Range(start, end).Delete()
+            tail = _delete_sections(doc, indices)
             doc.Save()
             doc.Close(WD_DO_NOT_SAVE)
-        if removed_tail and first > 1:
+        if tail:
             _promote_last_section(path)
-        result.pages_affected = last - first + 1
+        result.pages_affected = len(indices)
         result.output = path
     except WordUnavailable as exc:
         result.ok = False
@@ -451,16 +499,17 @@ def _append_document(work_path, insert_path):
     return pages
 
 
-def move_records(source, target, first, last, dest=None, backup=True):
-    """Move records [first, last] out of ``source`` and append them to the end
-    of ``target`` (preserving each record's headers/footers). If ``dest`` is
-    given the combined result is written there and ``target`` is left untouched;
-    otherwise ``target`` is modified in place (.bak backup). The records are
-    removed from ``source`` (.bak backup)."""
+def move_records(source, target, indices, dest=None, backup=True):
+    """Move records ``indices`` (1-based, any order, non-contiguous OK) out of
+    ``source`` and append them to the end of ``target`` (preserving each
+    record's headers/footers). If ``dest`` is given the combined result is
+    written there and ``target`` is left untouched; otherwise ``target`` is
+    modified in place (.bak backup). The records are removed from ``source``
+    (.bak backup)."""
     result = PageOpResult()
     temp = os.path.join(tempfile.gettempdir(), "wh_move_tmp.docx")
     try:
-        ext = extract_records(source, temp, first, last, remove_from_source=False)
+        ext = extract_records(source, temp, indices, remove_from_source=False)
         if not ext.ok:
             return ext
 
@@ -482,7 +531,7 @@ def move_records(source, target, first, last, dest=None, backup=True):
         result.pages_affected = _append_document(work, temp)
         result.output = work
 
-        rem = remove_records(source, first, last, backup=backup)
+        rem = remove_records(source, indices, backup=backup)
         if not rem.ok:
             result.ok = False
             result.error = f"added to target, but removing from source failed: {rem.error}"

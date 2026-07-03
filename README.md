@@ -102,14 +102,18 @@ headers/footers/images intact.
 Requires **Microsoft Word** installed. Operations open Word briefly, so they
 take a moment. When you pick a file, its document (record) count is shown.
 
+When you pick a file, its records are listed **by recipient name** with a
+checkbox each — tick the ones to act on (they don't have to be adjacent).
+
 **Extract**
-1. Choose the **source** combined file.
-2. Set the document range (**from** / **to**) — e.g. documents 3 to 5.
+1. Choose the **source** combined file — its recipients appear as a checklist.
+2. Tick the document(s) to extract (use **All** / **None** to help).
 3. Choose where to **save** them (a new `.docx`).
 4. Optionally tick **"Also remove these documents from the source"** (`.bak`).
 
 **Move** (the common case — shift a few records between combined files)
-1. **Move from** the source combined file and set the document range.
+1. **Move from** the source combined file and tick the recipients to move
+   (non-contiguous is fine — e.g. the 3rd and the 6th letter).
 2. **Into** the target combined file.
 3. Output to a **New file** or **Overwrite target** (`.bak`).
 
